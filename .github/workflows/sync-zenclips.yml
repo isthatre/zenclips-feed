@@ -1,0 +1,57 @@
+
+name: Sync ZenClips feed
+
+on:
+  schedule:
+    - cron: '17 */3 * * *' # every 3 hours
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Re-read every clip page, not just new or changed ones
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-zenclips
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync clips from zenclips.in
+        run: |
+          FLAGS=""
+          # Once a day (00:xx UTC) and on request, re-read every page so edited
+          # download links are picked up even if the sitemap lastmod did not move.
+          if [ "${{ inputs.full }}" = "true" ] || [ "$(date -u +%H)" = "00" ]; then FLAGS="--full"; fi
+          node scripts/sync-zenclips.mjs $FLAGS
+
+      - name: Commit changes
+        id: commit
+        run: |
+          git config user.name "zenclips-sync[bot]"
+          git config user.email "zenclips-sync@users.noreply.github.com"
+          git add zenclips.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "Sync ZenClips feed"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # jsDelivr caches branch files for up to 12 hours; this refreshes it now.
+      - name: Purge jsDelivr cache
+        if: steps.commit.outputs.changed == 'true'
+        run: curl -fsS "https://purge.jsdelivr.net/gh/${{ github.repository }}@${{ github.ref_name }}/zenclips.json" || true
