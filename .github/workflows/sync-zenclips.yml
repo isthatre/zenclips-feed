@@ -29,6 +29,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test thumbnail handling
+        run: node --test scripts/sync-zenclips.test.mjs
+
       - name: Sync clips from zenclips.in
         run: |
           FLAGS=""

@@ -90,10 +90,13 @@ const INLINE_IMAGE = /^data:image\/(?:webp|jpeg|png|gif);base64,[A-Za-z0-9+/=]+$
 const MAX_INLINE_IMAGE_CHARS = 64 * 1024;
 const thumbUrl = v => {
   const s = text(v);
+  // ZenClips can put its generic Discord banner in the server-rendered data.
+  // It is a placeholder, so leave it eligible for a retry on the next sync.
+  if (/\/discord-embed-banner\.png(?:[?#]|$)/i.test(s)) return '';
   return s.length <= MAX_INLINE_IMAGE_CHARS && INLINE_IMAGE.test(s) ? s : httpUrl(s);
 };
 
-function toRecord(raw, entry) {
+function toRecord(raw, entry, previous) {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.visibility && raw.visibility !== 'public') return null;
   const id = text(raw.id) || entry.id;
@@ -108,7 +111,7 @@ function toRecord(raw, entry) {
     cat: text(raw.category).toLowerCase(),
     ratio: text(raw.aspectRatio) || '16:9',
     res: text(raw.resolution),
-    thumb: thumbUrl(raw.thumbnail),
+    thumb: thumbUrl(raw.thumbnail) || thumbUrl(previous?.thumb),
     views: Number(raw.views) || 0,
     dl: Number(raw.downloads) || 0,
     link: link || linkCC,
@@ -117,6 +120,11 @@ function toRecord(raw, entry) {
     date,
     lm: entry.lastmod,
   };
+}
+
+function needsRefresh(entry, previous, full = false) {
+  // Thumbnail fixes do not always change the sitemap's lastmod timestamp.
+  return full || !previous || previous.lm !== entry.lastmod || !thumbUrl(previous.thumb);
 }
 
 async function readPrevious() {
@@ -180,7 +188,7 @@ async function main() {
     throw new Error(`sitemap shrank from ${previous.length} to ${entries.length}; refusing to overwrite the feed`);
   }
 
-  const todo = entries.filter(e => FULL || !prevById.has(e.id) || prevById.get(e.id).lm !== e.lastmod);
+  const todo = entries.filter(e => needsRefresh(e, prevById.get(e.id), FULL));
   console.log(`fetching ${todo.length} clip page(s)${FULL ? ' (--full)' : ''}`);
 
   let failed = 0;
@@ -189,7 +197,7 @@ async function main() {
     try {
       const raw = extractClip(await get(host + entry.pathname));
       if (!raw) throw new Error('no __INITIAL_CLIP__ data on page');
-      const rec = toRecord(raw, entry);
+      const rec = toRecord(raw, entry, prevById.get(entry.id));
       if (rec) fetched.set(entry.id, rec);
       else console.log('  skipped (not public / incomplete): ' + entry.id);
     } catch (e) {
@@ -207,7 +215,7 @@ async function main() {
     const fresh = fetched.get(e.id);
     const old = prevById.get(e.id);
     if (fresh) { next.push(fresh); old ? updated++ : added++; }
-    else if (old) { next.push(old); kept++; } 
+    else if (old) { next.push({ ...old, thumb: thumbUrl(old.thumb) }); kept++; }
   }
   next.sort(byNewest);
   const removed = previous.filter(c => !entries.some(e => e.id === c.id)).length;
@@ -224,4 +232,8 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error('sync failed: ' + e.message); process.exit(1); });
+export { extractClip, toRecord, needsRefresh };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(e => { console.error('sync failed: ' + e.message); process.exit(1); });
+}
